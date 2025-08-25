@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>CrewSynq – QuickView</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    :root { color-scheme: dark; }
+    html, body, #map { height: 100%; margin: 0; }
+    #hud {
+      position: absolute; top: 10px; left: 10px; z-index: 1000;
+      background: rgba(15,23,42,.85); color: #e5e7eb;
+      border: 1px solid #334155; border-radius: 10px;
+      padding: 10px 12px; font: 13px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      box-shadow: 0 8px 24px rgba(0,0,0,.25);
+    }
+    #hud .row { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+    #hud button, #hud input[type="checkbox"] + label {
+      font-weight: 700; color:#e5e7eb; cursor:pointer;
+    }
+    #hud button {
+      border:1px solid #334155; background:#0f172a; padding:6px 10px; border-radius:8px;
+    }
+    #hud .muted { color:#94a3b8; font-weight: 500; }
+    .legend { display:flex; gap:12px; margin-top:6px; }
+    .dot { width:10px; height:10px; border-radius:50%; display:inline-block; vertical-align:middle; margin-right:6px; border:1px solid #000; }
+    .heli { background:#a78bfa; border-color:#fff; }
+    .other { background:#60a5fa; border-color:#0a1626; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="hud">
+    <div class="row">
+      <button id="fitBtn">Fit</button>
+      <button id="refreshBtn">Refresh</button>
+    </div>
+    <div class="row">
+      <input type="checkbox" id="heliOnly" />
+      <label for="heliOnly">Heli only (heuristic)</label>
+    </div>
+    <div id="stats" class="row">0 tracks <span class="muted">•</span> <span id="ts">--:--:--</span></div>
+    <div class="legend">
+      <div><span class="dot heli"></span>Likely heli</div>
+      <div><span class="dot other"></span>Other aircraft</div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // Center on Calgary by default
+    const map = L.map('map', { zoomControl: true, preferCanvas: true })
+                 .setView([51.0486, -114.0708], 11);
+
+    // Free tiles (OSM)
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    const markers = new Map(); // key: icao24 -> L.CircleMarker
+    let fittedOnce = false;
+
+    function upsertMarker(f) {
+      const key = f.icao24 || f.callsign || Math.random().toString(36).slice(2);
+      const lat = f.latitude, lng = f.longitude;
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+      const isHeli = !!f.likelyHeli;
+      const color = isHeli ? '#a78bfa' : '#60a5fa';
+      const weight = isHeli ? 2 : 1;
+      const radius = isHeli ? 6 : 5;
+
+      let m = markers.get(key);
+      if (!m) {
+        m = L.circleMarker([lat, lng], {
+          radius, color: '#0a1626', weight, fillColor: color, fillOpacity: 0.9
+        }).addTo(map);
+        m.bindTooltip((f.callsign || 'Unknown') + (isHeli ? ' (heli?)' : ''), { direction: 'top' });
+        markers.set(key, m);
+      } else {
+        m.setLatLng([lat, lng]);
+        m.setStyle({ radius, fillColor: color, weight });
+      }
+    }
+
+    function pruneMarkers(keepKeys) {
+      for (const [key, m] of markers.entries()) {
+        if (!keepKeys.has(key)) {
+          map.removeLayer(m);
+          markers.delete(key);
+        }
+      }
+    }
+
+    async function fetchLive() {
+      const heliOnly = document.getElementById('heliOnly').checked;
+      const r = await fetch('/api/heli/live');
+      if (!r.ok) throw new Error('Backend ' + r.status);
+      const data = await r.json();
+      const flights = Array.isArray(data.flights) ? data.flights : [];
+      const list = heliOnly ? flights.filter(f => f.likelyHeli) : flights;
+
+      const keep = new Set();
+      list.forEach(f => {
+        const key = f.icao24 || f.callsign || JSON.stringify([f.latitude, f.longitude]);
+        keep.add(key);
+        upsertMarker({ ...f, key });
+      });
+      pruneMarkers(keep);
+
+      document.getElementById('stats').firstChild.nodeValue = list.length + ' tracks ';
+      document.getElementById('ts').textContent = new Date().toLocaleTimeString();
+
+      if (!fittedOnce && list.length) {
+        const group = L.featureGroup([...markers.values()]);
+        map.fitBounds(group.getBounds().pad(0.2));
+        fittedOnce = true;
+      }
+    }
+
+    // UI hooks
+    document.getElementById('fitBtn').onclick = () => {
+      const group = L.featureGroup([...markers.values()]);
+      if (group.getLayers().length) map.fitBounds(group.getBounds().pad(0.2));
+    };
+    document.getElementById('refreshBtn').onclick = () => fetchLive();
+    document.getElementById('heliOnly').onchange = () => fetchLive();
+
+    // Poll every 15s
+    fetchLive();
+    setInterval(fetchLive, 15000);
+  </script>
+</body>
+</html>
