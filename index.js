@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
-const adsbAdapter = require("./adsbAdapter"); // <-- IMPORT OUR NEW ADAPTER
+const adsbAdapter = require("./adsbAdapter"); 
 
 dotenv.config();
 
@@ -10,59 +10,72 @@ app.use(cors());
 
 const PORT = process.env.PORT || 4000;
 
-// Calgary default bbox: south, north, west, east
-// This is unchanged and still used.
+// Cache setup: Store data in memory for 30 seconds
+const ADSB_CACHE = new Map();
+const CACHE_TTL_MS = 30000; // 30 seconds
+
 const DEFAULT_BBOX = (process.env.BBOX || "50.70,51.30,-114.40,-113.70")
   .split(",")
   .map(Number);
 
-/**
- * This helper function is unchanged. It works perfectly.
- */
+
 function parseBoundsFromQuery(q) {
-  // Prefer explicit lamin/lamax/lomin/lomax
-  const lamin = parseFloat(q.lamin);
-  const lamax = parseFloat(q.lamax);
-  const lomin = parseFloat(q.lomin);
-  const lomax = parseFloat(q.lomax);
+  let lamin, lamax, lomin, lomax;
 
-  if ([lamin, lamax, lomin, lomax].every(Number.isFinite)) {
-    return { lamin, lamax, lomin, lomax, key: `${lamin},${lamax},${lomin},${lomax}` };
+  // Try explicit params first
+  const exLamin = parseFloat(q.lamin);
+  const exLamax = parseFloat(q.lamax);
+  const exLomin = parseFloat(q.lomin);
+  const exLomax = parseFloat(q.lomax);
+
+  if ([exLamin, exLamax, exLomin, exLomax].every(Number.isFinite)) {
+    lamin = exLamin;
+    lamax = exLamax;
+    lomin = exLomin;
+    lomax = exLomax;
+  } else {
+    // Fallback to bbox string
+    const bboxStr = (q.bbox || DEFAULT_BBOX.join(",")).toString();
+    const [south, north, west, east] = bboxStr.split(",").map(Number);
+    lamin = south;
+    lamax = north;
+    lomin = west;
+    lomax = east;
   }
+  
+  // Create ONE rounded key, snapped to 2 decimal places (~1km grid).
+  const key = [lamin, lamax, lomin, lomax].map(n => n.toFixed(2)).join(',');
 
-  // Fallback: bbox=south,north,west,east
-  const bboxStr = (q.bbox || DEFAULT_BBOX.join(",")).toString();
-  const [south, north, west, east] = bboxStr.split(",").map(Number);
-  return {
-    lamin: south,
-    lamax: north,
-    lomin: west,
-    lomax: east,
-    key: `${south},${north},${west},${east}`,
-  };
+  return { lamin, lamax, lomin, lomax, key };
 }
+
 
 // Routes
 app.get("/api/heli/live", async (req, res) => {
   try {
-    // 1. Parse bounds just like before
     const b = parseBoundsFromQuery(req.query);
+    const now = Date.now();
+    const cached = ADSB_CACHE.get(b.key);
 
-    // 2. Call the adapter instead of OpenSky.
-    // The adapter handles all the fetching, math, and data mapping.
+    if (cached && (now - cached.timestamp < CACHE_TTL_MS)) {
+      return res.json(cached.payload); // Send cached data
+    }
+
     const { time, flights } = await adsbAdapter.fetchFlightStates(b);
 
-    // 3. Send the pre-formatted response.
-    res.json({
+    const payload = {
       ok: true,
       time,
       count: flights.length,
       bbox: [b.lamin, b.lamax, b.lomin, b.lomax],
-      flights, // This array is already perfectly formatted by the adapter
-    });
+      flights,
+    };
+
+    ADSB_CACHE.set(b.key, { timestamp: now, payload });
+    res.json(payload); // Send the new data
+
   } catch (e) {
     console.error("ADS-B route error:", e?.message || e);
-    // Send the same upstream failure error as before
     res.status(502).json({
       ok: false,
       error: "upstream_failure",
@@ -71,11 +84,9 @@ app.get("/api/heli/live", async (req, res) => {
   }
 });
 
-/**
- * Health check route. Unchanged.
- */
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
   console.log(`CrewSynq ADS-B proxy (adsb.fi) on http://0.0.0.0:${PORT}`);
+  console.log(`Cache TTL set to ${CACHE_TTL_MS / 1000} seconds.`);
 });
