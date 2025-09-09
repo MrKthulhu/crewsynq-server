@@ -11,7 +11,6 @@ app.use(cors());
 const PORT = process.env.PORT || 4000;
 
 // Dynamic Regional Caching Logic
-// This cache will store data for different geographic regions as users make requests.
 const REGIONAL_CACHE = new Map();
 const CACHE_TTL_MS = 30000; // 30 seconds
 
@@ -33,7 +32,9 @@ function getRegionalBbox(centerLat, centerLon) {
 
 app.get("/api/version", (req, res) => {
   const version = process.env.APP_VERSION || "1.0.0";
-  res.json({ version });
+  // Read the new changelog variable, with a default message
+  const changelog = process.env.APP_CHANGELOG || "Bug fixes and performance improvements.";
+  res.json({ version, changelog });
 });
 
 app.get("/api/heli/live", async (req, res) => {
