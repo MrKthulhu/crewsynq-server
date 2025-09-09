@@ -31,7 +31,7 @@ function getRegionalBbox(centerLat, centerLon) {
 // API Routes 
 
 app.get("/api/version", (req, res) => {
-  const version = process.env.APP_VERSION || "1.0.0";
+  const version = process.env.APP_VERSION || "1.0.1";
   // Read the new changelog variable, with a default message
   const changelog = process.env.APP_CHANGELOG || "Bug fixes and performance improvements.";
   res.json({ version, changelog });
